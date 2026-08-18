@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.thefilmmap/filming-locations",
+  "description": "15,272 filming locations and 12,762 films, series, games and anime: where a title was shot, what was shot at a place, nearby, ranked. No key, CC0.",
+  "version": "1.0.0",
+  "websiteUrl": "https://thefilmmap.com/data/",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://thefilmmap.com/mcp"
+    }
+  ]
+}
