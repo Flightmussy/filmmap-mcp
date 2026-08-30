@@ -24,7 +24,14 @@
  * explicit `relation` field, every tool description says it, and the
  * `initialize` instructions say it first. Do not "simplify" that away.
  *
+ * Two transports over the same dispatch (handleRpc), pick one:
+ *   HTTP (default) — the hosted endpoint the VPS runs.
+ *   stdio (--stdio) — newline-delimited JSON-RPC on stdin/stdout, for clients
+ *     that spawn the server locally. Logs go to stderr there: anything on
+ *     stdout that is not an MCP message corrupts the stream.
+ *
  * Run:  ATLAS_JSON=/var/www/screenatlas/data/atlas-compact.json PORT=8896 node server.mjs
+ *       ATLAS_JSON=./atlas-compact.json node server.mjs --stdio
  */
 import { createServer } from 'node:http'
 import { readFileSync, statSync } from 'node:fs'
@@ -55,6 +62,10 @@ const LATEST = '2025-06-18'
 // when atlas-compact.json ships `photoCredits` (scripts/fetch-photo-credits.mjs).
 // Keep equal to "version" in mcp/server.json — the registry keys on it.
 const VERSION = '1.1.0'
+const STDIO = process.argv.includes('--stdio')
+
+// On stdio, stdout carries the protocol — every log line must go to stderr.
+const log = (...a) => (STDIO ? console.error(...a) : console.log(...a))
 
 /* ── Mirrors of src/data/locationsCore.ts — keep in sync ────────────────────
  * Duplicated rather than imported because this file runs on the VPS with no
@@ -340,7 +351,7 @@ function loadData() {
   // `Netherlands`. Preferring the field made this server answer 162 where the
   // site answers 161, for the same one country under two Wikidata labels.
   countryCount = new Set(locations.map((l) => l.country).filter(Boolean)).size
-  console.log(
+  log(
     `filmmap-mcp: loaded ${locations.length} locations and ${titles.length} productions from ${DATA}`,
   )
 }
@@ -983,9 +994,65 @@ const server = createServer((req, res) => {
     const t0 = Date.now()
     const result = handleRpc(msg)
     const took = Date.now() - t0
-    console.log(`filmmap-mcp: ${msg.method}${msg.params?.name ? ' ' + msg.params.name : ''} (${took}ms)`)
+    log(`filmmap-mcp: ${msg.method}${msg.params?.name ? ' ' + msg.params.name : ''} (${took}ms)`)
     if (result && result.__rpcError) return send(res, 200, { jsonrpc: '2.0', error: result.__rpcError, id: msg.id })
     return send(res, 200, { jsonrpc: '2.0', result, id: msg.id })
   })
 })
-server.listen(PORT, HOST, () => console.log(`filmmap-mcp: listening on http://${HOST}:${PORT}/mcp`))
+// ---- stdio transport (newline-delimited JSON-RPC on stdin/stdout) -----------
+// Clients that spawn the server locally speak this instead of HTTP. Glama's
+// build harness runs `mcp-proxy -- node server.mjs --stdio`, so without this the
+// server cannot be containerised, scored or released there at all — it was
+// HTTP-only until 2026-08-30, and that, not the listing, was the real blocker.
+// Same dispatch and the same id rule as the POST branch above: a notification
+// (no id, or a null one) draws no reply.
+function writeStdio(msg) {
+  process.stdout.write(JSON.stringify(msg) + '\n')
+}
+function handleStdioLine(line) {
+  let msg
+  try {
+    msg = JSON.parse(line)
+  } catch {
+    return writeStdio({ jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null })
+  }
+  if (Array.isArray(msg))
+    return writeStdio({
+      jsonrpc: '2.0',
+      error: { code: -32600, message: 'Batching is not supported (protocol 2025-06-18)' },
+      id: null,
+    })
+  if (!msg || msg.jsonrpc !== '2.0')
+    return writeStdio({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id: null })
+
+  const hasId = msg.id !== undefined && msg.id !== null
+  const isNotification = typeof msg.method === 'string' && !hasId
+  const isResponse = msg.method === undefined && (msg.result !== undefined || msg.error !== undefined)
+  if (isNotification || isResponse) return
+  if (typeof msg.method !== 'string' || !hasId)
+    return writeStdio({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id: null })
+
+  const t0 = Date.now()
+  const result = handleRpc(msg)
+  log(`filmmap-mcp: ${msg.method}${msg.params?.name ? ' ' + msg.params.name : ''} (${Date.now() - t0}ms)`)
+  if (result && result.__rpcError) return writeStdio({ jsonrpc: '2.0', error: result.__rpcError, id: msg.id })
+  writeStdio({ jsonrpc: '2.0', result, id: msg.id })
+}
+function serveStdio() {
+  let buf = ''
+  process.stdin.setEncoding('utf8')
+  process.stdin.on('data', (chunk) => {
+    buf += chunk
+    let nl
+    while ((nl = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, nl).trim()
+      buf = buf.slice(nl + 1)
+      if (line) handleStdioLine(line)
+    }
+  })
+  process.stdin.on('end', () => process.exit(0))
+  log(`filmmap-mcp: serving stdio (${locations.length} locations)`)
+}
+
+if (STDIO) serveStdio()
+else server.listen(PORT, HOST, () => log(`filmmap-mcp: listening on http://${HOST}:${PORT}/mcp`))
