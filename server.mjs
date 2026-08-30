@@ -51,7 +51,10 @@ const DATA = DATA_CANDIDATES.find(exists) ?? DATA_CANDIDATES[0]
 const SITE_URL = 'https://thefilmmap.com'
 const PROTOCOLS = new Set(['2025-06-18', '2025-03-26', '2024-11-05'])
 const LATEST = '2025-06-18'
-const VERSION = '1.0.0'
+// 1.1.0 (2026-08-21): place records carry the photograph's author and licence
+// when atlas-compact.json ships `photoCredits` (scripts/fetch-photo-credits.mjs).
+// Keep equal to "version" in mcp/server.json — the registry keys on it.
+const VERSION = '1.1.0'
 
 /* ── Mirrors of src/data/locationsCore.ts — keep in sync ────────────────────
  * Duplicated rather than imported because this file runs on the VPS with no
@@ -66,6 +69,12 @@ const CATEGORIES = {
   nature: { label: 'Landscapes & nature', slug: 'landscapes' },
   city: { label: 'Towns & cities', slug: 'towns' },
   region: { label: 'Countries & regions', slug: 'regions' },
+  // Mirrors CATEGORY_META in src/data/locationsCore.ts and was missing until
+  // 2026-08-30, which cost two things: `by_category` in get_statistics is built
+  // from these keys, so 31 locations were absent from a breakdown that is meant
+  // to account for all of them, and search_locations rejected `fiction` as an
+  // unknown category while the atlas ships 31 of them and a /fictional/ hub.
+  fiction: { label: 'Fictional places', slug: 'fictional' },
 }
 const CATEGORY_KEYS = Object.keys(CATEGORIES)
 const CATEGORY_BY_ANY = new Map()
@@ -151,7 +160,9 @@ const wikiEvidenceHref = (t) => {
     return `${base}/wiki/${encodeURIComponent(`Category:${cat.name}`.replace(/ /g, '_'))}`
   }
   if (!t.wiki || !t.wikiSection) return t.wiki
-  return `${t.wiki}#${t.wikiSection}`
+  // `#`, `%` and `?` cannot travel raw inside a fragment — the hand copy of
+  // fragmentOf() in src/data/locationsCore.ts; keep the two in step.
+  return `${t.wiki}#${t.wikiSection.replace(/%/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F')}`
 }
 
 /** A game, an anime or a manga is SET here; everything else was FILMED here. The
@@ -199,6 +210,9 @@ const sourceNote = (t) =>
 let locations = []
 let titles = []
 let descriptions = { locations: {}, titles: {} }
+/** Commons file name (as stored in the `img` column) → { by, lic, url }.
+ *  Absent from data files built before 2026-08-21; every lookup tolerates that. */
+let photoCredits = {}
 let countryCount = 0
 let loadedMtime = 0
 let lastStat = 0
@@ -229,6 +243,11 @@ function loadData() {
       // ladder is 250, 330, 500, 960, 1280 (measured 2026-08-18). See the note
       // on commonsThumb in src/data/locationsCore.ts.
       img: img ? `${COMMONS}${img}?width=500` : null,
+      // The stored file name, kept verbatim because it is the key into
+      // `photoCredits` — rebuilding it from the URL would mean un-encoding
+      // what the pipeline encoded, and the two would drift on the first odd
+      // character.
+      imgKey: img ?? null,
       wiki: thickWiki(r[lc.wiki], name),
       slug: thickSlug(r[lc.slug], name),
       titleIdx: r[lc.t],
@@ -314,6 +333,7 @@ function loadData() {
   }
 
   descriptions = raw.descriptions ?? { locations: {}, titles: {} }
+  photoCredits = raw.photoCredits ?? {}
   // Counted from the decoded rows, never from the file's own `countries` field.
   // That field counts RAW country names; `loc.country` above has already been
   // through COUNTRY_DISPLAY, which folds `Kingdom of the Netherlands` into
@@ -411,10 +431,19 @@ function placeBrief(loc) {
   }
 }
 function placeFull(loc) {
+  const credit = loc.imgKey ? photoCredits[loc.imgKey] : null
   return {
     ...placeBrief(loc),
     description: descriptions.locations[loc.qid] ?? null,
     image: loc.img,
+    /* Who took the photograph and under which licence, from Wikimedia Commons.
+     * Most of these licences make naming the author a condition of reuse, so
+     * anything that reprints `image` should reprint these two beside it. Null
+     * when Commons records none, or when the data file predates the field. */
+    image_by: credit?.by ?? null,
+    image_licence: credit?.lic ?? null,
+    image_licence_url: credit?.url ?? null,
+    image_page: loc.imgKey ? `https://commons.wikimedia.org/wiki/File:${loc.imgKey}` : null,
     wikipedia: loc.wiki,
     wikidata: `https://www.wikidata.org/wiki/${loc.qid}`,
     map: `${SITE_URL}/#loc=${loc.slug}`,
@@ -555,7 +584,9 @@ const TOOLS = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Title or part of one, e.g. "bond", "star wars"' },
-        kind: { type: 'string', enum: ['film', 'tv', 'game', 'anime'], description: 'Restrict to one medium (optional)' },
+        // `manga` belongs here: 366 of them ship, and leaving it out made a
+        // medium the atlas publishes an invalid input to this tool.
+        kind: { type: 'string', enum: ['film', 'tv', 'game', 'anime', 'manga'], description: 'Restrict to one medium (optional)' },
         limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max results (default 10)' },
       },
       required: ['query'],
@@ -771,7 +802,7 @@ const TOOLS = [
       'Headline figures computed live from the atlas: totals by medium and by kind of place, the top countries, the busiest and most famous locations, and — the number worth quoting — how many productions Wikidata records only at country level and therefore cannot place. The source for any aggregate claim about this dataset.',
     inputSchema: { type: 'object', properties: {} },
     run() {
-      const byKind = { film: 0, tv: 0, game: 0 }
+      const byKind = { film: 0, tv: 0, game: 0, anime: 0, manga: 0 }
       const byCategory = {}
       const byCountry = new Map()
       let countryOnly = 0
@@ -793,11 +824,18 @@ const TOOLS = [
       return {
         locations: locations.length,
         productions: titles.length,
+        // ⚠ EVERY MEDIUM, or this breakdown does not sum to `productions`
+        // above. It listed film, tv and game only, so 407 anime and 366 manga
+        // were counted in the loop and then dropped from the answer: 773
+        // productions missing from "the source for any aggregate claim about
+        // this dataset", with nothing saying so.
         by_medium: {
           film: byKind.film,
           tv: byKind.tv,
           game: byKind.game,
-          note: 'Films and series are placed by filming location (P915). Games are placed by narrative location (P840) — where they are set, not filmed.',
+          anime: byKind.anime || 0,
+          manga: byKind.manga || 0,
+          note: 'Films and series are placed by filming location (P915). Games, anime and manga are placed by narrative location (P840) or by a Wikipedia setting category — where they are set, not filmed. These five sum to the productions total.',
         },
         by_category: Object.fromEntries(
           CATEGORY_KEYS.map((k) => [k, { label: CATEGORIES[k].label, locations: byCategory[k] || 0 }]),
