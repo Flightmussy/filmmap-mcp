@@ -1,8 +1,8 @@
 # FilmMap MCP server
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server for the
-FilmMap atlas: **15,272 real filming locations across 161 countries**, joined to
-the **12,762 films, series, video games, anime and manga** recorded at them,
+FilmMap atlas: **15,368 real filming locations across 166 countries**, joined to
+the **13,312 films, series, video games, anime and manga** recorded at them,
 with coordinates, fame ranking, per-place production lists and the source behind
 every claim.
 
