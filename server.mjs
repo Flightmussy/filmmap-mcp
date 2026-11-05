@@ -88,8 +88,10 @@ const LATEST = '2025-11-25'
 // argument matched as an ISO code only (see matchesCountry).
 // 1.2.1 (2026-11-05): locations_near refuses a latitude or longitude out of range.
 // 1.2.2 (2026-11-05): a production gets a page link only when the site has that page (livePage).
+// 1.2.3 (2026-11-05): tool descriptions are plain facts, with no instruction to the model, no other tool's
+// name and no dash (Claude's directory policy); that guidance lives in the instructions.
 // Keep equal to "version" in mcp/server.json: the registry keys on it.
-const VERSION = '1.2.2'
+const VERSION = '1.2.3'
 const STDIO = process.argv.includes('--stdio')
 
 // On stdio, stdout carries the protocol — every log line must go to stderr.
@@ -622,7 +624,7 @@ function findLocation(arg) {
   )
 }
 const CATEGORY_ENUM_DESC =
-  'Kind of place — key or slug: ' + CATEGORY_KEYS.map((k) => `${k} (${CATEGORIES[k].label})`).join(', ')
+  'Kind of place, as a key or a slug: ' + CATEGORY_KEYS.map((k) => `${k} (${CATEGORIES[k].label})`).join(', ')
 /** How many pins are whole jurisdictions rather than filming locations. */
 const regionCount = () => locations.reduce((n, l) => n + (l.category === 'region' ? 1 : 0), 0)
 
@@ -636,9 +638,9 @@ const TOOLS = [
     // next data refresh and every client that connects is then told a wrong
     // figure. The sibling atlas learned this the expensive way.
     description:
-      'The main tool. Give a film or television title and get every place Wikidata records it as filmed at, with coordinates, plus the countries it records too coarsely to place. Covers {{FILMS}} productions across {{LOCATIONS}} places. ' +
-      'Two things to carry into any answer you write. First, video games AND anime are in here as well, and neither is filmed anywhere: their places are where they are SET (Wikidata P840, not P915), and every record says which through its `relation` field — never call one of those a filming location. ' +
-      'Second, the gaps are real information: when `countries_only` is populated, Wikidata knows the production shot in those countries but not where, and the honest answer says so rather than guessing a street. This atlas never records which scene was shot where, so do not infer it.',
+      'Returns every place recorded for a film, series, game, anime or manga, with coordinates, plus the countries recorded too coarsely to place. Covers {{FILMS}} productions across {{LOCATIONS}} places. ' +
+      'Films and series are placed where they were filmed (Wikidata P915). Video games, anime and manga are filmed nowhere, so they are placed where they are set (P840); the `relation` field of each record says which. ' +
+      'A filled `countries_only` list means Wikidata records the production in those countries without a finer place. Places named only in the production\'s own Wikipedia article come in separate fields prefixed `wiki_`. The data records that a production was filmed at a place, not which scene was shot there.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -704,7 +706,7 @@ const TOOLS = [
     name: 'search_productions',
     title: 'Search films, series and games by name',
     description:
-      'Find productions by name (accent- and case-insensitive substring match), best match first then by how widely Wikipedia covers them. Filter by kind: film, tv, game or anime. Use it when you are unsure of a title before calling where_was_it_filmed. Games and anime are placed by where they are SET, never where they were filmed; the `relation` field on every result says which.',
+      'Finds productions by name, ignoring accents and case, best match first, then by how widely Wikipedia covers them. An optional filter by kind: film, tv, game, anime or manga. Each result carries its kind, its year and a `relation` field: films and series are placed where they were filmed, games, anime and manga where they are set.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -742,7 +744,7 @@ const TOOLS = [
     name: 'what_was_filmed_here',
     title: 'What was filmed at a place',
     description:
-      'The inverse question, and the one this atlas is unusual for answering: give a place and get everything recorded as shot there, most widely covered first. Accepts a slug (preferred, e.g. "skellig-michael") or a name. Each result carries `relation`, because a video game or an anime attached to a place was SET there and not filmed there.',
+      'Returns everything recorded as made at a place, most widely covered first. Takes the place as a slug (e.g. "skellig-michael") or as a name. Each result carries a `relation` field, because a video game, an anime or a manga tied to a place is set there, not filmed there.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -786,7 +788,7 @@ const TOOLS = [
     name: 'search_locations',
     title: 'Search filming locations by name',
     description:
-      'Find filming locations by name, optionally filtered by country (name or 2-letter ISO code) and by kind of place. Results are ordered by fame rank, which is driven by the most widely covered production shot there rather than by the place itself.',
+      'Finds filming locations by name, optionally filtered by country (a name or a two letter ISO code) and by kind of place. Results are ordered by fame rank, which comes from the most widely covered production shot there rather than from the place itself.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -823,7 +825,7 @@ const TOOLS = [
     name: 'locations_near',
     title: 'Filming locations near a point',
     description:
-      'List filming locations within a radius of a WGS84 coordinate, most famous first, each with distance_km — the direct answer to "what was filmed near me?" and to set-jetting itineraries. Radius defaults to 50 km (max 500). Geocode the place yourself, then call this with its latitude and longitude.',
+      'Lists the filming locations within a radius of a WGS84 coordinate, most famous first, each with its `distance_km`: what was filmed near a point. The radius defaults to 50 km (at most 500). Takes a latitude and a longitude in degrees; it does not look up place names.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -872,11 +874,11 @@ const TOOLS = [
     name: 'top_locations',
     title: 'The most filmed places',
     description:
-      'The atlas ranked, worldwide or inside one country or one kind of place. Order is fame rank, which comes from the most widely covered production shot there — so rank 1 is the place the most famous production used, not the place with the most credits. Sort by `productions` instead to get the busiest places (Los Angeles, New York, Vancouver). Answers "most famous filming locations in <country>".',
+      'Ranks the places in the atlas, worldwide or inside one country or one kind of place. The default order is fame rank, which comes from the most widely covered production shot there, so rank 1 is the place the most famous production used, not the place with the most credits. With `sort` set to `productions` the order is by number of productions (Los Angeles, New York, Vancouver).',
     inputSchema: {
       type: 'object',
       properties: {
-        country: { type: 'string', description: 'Country name or ISO code (optional — omit for worldwide)' },
+        country: { type: 'string', description: 'Country name or two letter ISO code (optional; without it the ranking is worldwide)' },
         category: { type: 'string', description: CATEGORY_ENUM_DESC + ' (optional)' },
         sort: { type: 'string', enum: ['fame', 'productions'], description: 'Ranking (default fame)' },
         limit: { type: 'integer', minimum: 1, maximum: 100, description: 'How many (default 10)' },
@@ -903,7 +905,7 @@ const TOOLS = [
     name: 'list_countries',
     title: 'Countries with location counts',
     description:
-      'Every country in the atlas with how many filming locations it holds, most first — answers "which country has the most filming locations". Countries with a browsable page carry its URL. Coverage reflects what Wikidata records, which is uneven and skewed to Europe and North America, so read these as records and not as an inventory of world film production.',
+      'Lists every country in the atlas with its number of filming locations, most first. Countries with a page on the site carry its URL. The counts reflect what Wikidata records, which is uneven and skewed to Europe and North America: they are records, not an inventory of world film production.',
     inputSchema: { type: 'object', properties: {} },
     run() {
       const byCountry = new Map()
@@ -930,7 +932,7 @@ const TOOLS = [
     name: 'get_statistics',
     title: 'Atlas statistics',
     description:
-      'Headline figures computed live from the atlas: totals by medium and by kind of place, the top countries, the busiest and most famous locations, and — the number worth quoting — how many productions Wikidata records only at country level and therefore cannot place. The source for any aggregate claim about this dataset.',
+      'Headline figures computed live from the atlas: totals by medium and by kind of place, the top countries, the busiest and the most famous locations, and how many productions Wikidata records only at country level and so cannot place.',
     inputSchema: { type: 'object', properties: {} },
     run() {
       const byKind = { film: 0, tv: 0, game: 0, anime: 0, manga: 0 }
@@ -1018,16 +1020,17 @@ function handleRpc(msg) {
         `${titles.length.toLocaleString('en-US')} films, series and games across ${countryCount} countries. The backbone is ` +
         `"filming location" (P915) statements on Wikidata joined to each place's coordinates and Wikipedia article; some ` +
         `records additionally carry places named in the production's own English Wikipedia article, ALWAYS in fields ` +
-        `prefixed wiki_ and never merged with the statements — quote those as "per Wikipedia". Nothing is scraped from ` +
+        `prefixed wiki_ and never merged with the statements: quote those as "per Wikipedia". Nothing is scraped from ` +
         `listicles and nothing is generated. ` +
-        `TWO RULES WHEN YOU QUOTE THIS DATA. (1) Video games are placed by where they are SET (P840), because a game is ` +
-        `filmed nowhere — every record carries a "relation" field saying "filmed at" or "set in", and calling a game's ` +
-        `place a filming location is a false claim. (2) This atlas records that a production filmed at a place and stops ` +
-        `there: which scene was shot where is NOT in the data, so never assign one. Gaps are reported honestly rather ` +
-        `than filled — where Wikidata knows only a country, the answer says so. ` +
+        `TWO RULES WHEN YOU QUOTE THIS DATA. (1) Video games, anime and manga are placed by where they are SET (P840), ` +
+        `because they are filmed nowhere; every record carries a "relation" field saying "filmed at" or "set in", and ` +
+        `calling such a place a filming location is a false claim. (2) This atlas records that a production filmed at a ` +
+        `place and stops there: which scene was shot where is NOT in the data, so never assign one. Gaps are reported ` +
+        `rather than filled: where Wikidata knows only a country, the answer says so. ` +
         `Use where_was_it_filmed for the main question, what_was_filmed_here for the inverse, locations_near for ` +
-        `"what was filmed near me", search_productions / search_locations for lookups, top_locations and list_countries ` +
-        `for coverage, and get_statistics for aggregate claims. Every result links its page on ${SITE_URL}.`,
+        `"what was filmed near me" (it takes coordinates, so geocode a place name first), search_productions to resolve ` +
+        `a title you are unsure of and search_locations for places, top_locations and list_countries for coverage, and ` +
+        `get_statistics for aggregate claims. A production or a place links its page on ${SITE_URL} where the site has one.`,
     }
   }
   if (method === 'ping') return {}

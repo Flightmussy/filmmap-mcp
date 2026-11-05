@@ -3,7 +3,7 @@
   "name": "com.moviescenemap/filming-locations",
   "title": "Movie Scene Map",
   "description": "Where films and TV were shot, and where games, anime and manga are set. Wikidata, read only, CC0.",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "websiteUrl": "https://moviescenemap.com/data/",
   "icons": [
     { "src": "https://moviescenemap.com/favicon.svg", "mimeType": "image/svg+xml", "sizes": ["any"] },
