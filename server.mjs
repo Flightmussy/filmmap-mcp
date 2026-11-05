@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * FilmMap MCP server — a remote Model Context Protocol endpoint over the
- * filming-location atlas (https://thefilmmap.com/mcp).
+ * Movie Scene Map MCP server: a remote Model Context Protocol endpoint over the
+ * filming-location atlas (https://moviescenemap.com/mcp). It was named FilmMap
+ * until 2026-11-05; the service, the log prefix and the GitHub repo keep the
+ * old name (filmmap-mcp), because renaming them moves nothing a client sees.
  *
  * Zero dependencies by design (the pattern is shared with the sister atlases):
  * it implements the MCP Streamable HTTP transport (stateless mode) directly —
@@ -9,10 +11,21 @@
  * atlas-compact.json the site already deploys under /data/. Read-only; no
  * sessions, no auth, CORS open (facts from Wikidata, CC0).
  *
- * Spec: modelcontextprotocol.io — protocol revisions 2025-03-26 / 2025-06-18.
+ * Spec: modelcontextprotocol.io, protocol revisions 2024-11-05, 2025-03-26,
+ * 2025-06-18 and 2025-11-25 (the client's version is echoed when it is one of
+ * these, else the newest is offered).
  *   POST /mcp  JSON-RPC request  → application/json response
  *   POST /mcp  notification      → 202 empty
+ *   POST /mcp  with an MCP-Protocol-Version header this server does not speak → 400
  *   GET/DELETE /mcp              → 405 (no server-initiated streams)
+ *
+ * DIRECTORY READINESS (2026-11-05, the maker: "make it 100% proper"). Claude's
+ * Connectors Directory refuses a tool without a `readOnlyHint` or
+ * `destructiveHint`; every tool here now carries the full set of annotations
+ * (read only, not destructive, idempotent, closed world: it reads one local
+ * file). Successful calls also return `structuredContent` beside the JSON text,
+ * as the 2025-06-18 revision asks of a server that has structured results.
+ * `mcp/conformance.mjs` checks every rule above against a running server.
  *
  * ⚠ THE ONE RULE THIS FILE EXISTS TO PROTECT. A film or a series is placed by
  * where it was **filmed** (Wikidata P915). A video game is filmed nowhere, and
@@ -35,6 +48,7 @@
  */
 import { createServer } from 'node:http'
 import { readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const PORT = Number(process.env.PORT || 8896)
@@ -55,13 +69,27 @@ const exists = (p) => {
   }
 }
 const DATA = DATA_CANDIDATES.find(exists) ?? DATA_CANDIDATES[0]
-const SITE_URL = 'https://thefilmmap.com'
-const PROTOCOLS = new Set(['2025-06-18', '2025-03-26', '2024-11-05'])
-const LATEST = '2025-06-18'
+const SITE_URL = 'https://moviescenemap.com'
+/** The site's own icons, for clients that draw one beside the server's name
+ *  (serverInfo.icons, 2025-11-25): the scalable mark and the 180 px tile. */
+const SERVER_ICONS = [
+  { src: `${SITE_URL}/favicon.svg`, mimeType: 'image/svg+xml', sizes: ['any'] },
+  { src: `${SITE_URL}/apple-touch-icon.png`, mimeType: 'image/png', sizes: ['180x180'] },
+]
+// 2025-11-25 asks nothing new of a stateless, read only, tools only server: its
+// additions are optional (icons, a description in serverInfo) or for features
+// this server does not offer (tasks, elicitation, sampling with tools, OAuth).
+const PROTOCOLS = new Set(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'])
+const LATEST = '2025-11-25'
 // 1.1.0 (2026-08-21): place records carry the photograph's author and licence
 // when atlas-compact.json ships `photoCredits` (scripts/fetch-photo-credits.mjs).
-// Keep equal to "version" in mcp/server.json — the registry keys on it.
-const VERSION = '1.1.0'
+// 1.2.0 (2026-11-05): the name Movie Scene Map, tool annotations, structuredContent,
+// protocol 2025-11-25, the MCP-Protocol-Version check, and a two letter country
+// argument matched as an ISO code only (see matchesCountry).
+// 1.2.1 (2026-11-05): locations_near refuses a latitude or longitude out of range.
+// 1.2.2 (2026-11-05): a production gets a page link only when the site has that page (livePage).
+// Keep equal to "version" in mcp/server.json: the registry keys on it.
+const VERSION = '1.2.2'
 const STDIO = process.argv.includes('--stdio')
 
 // On stdio, stdout carries the protocol — every log line must go to stderr.
@@ -155,12 +183,32 @@ const wikiCat = (section) =>
   /^#(en|ja):/.test(section ?? '')
     ? { wiki: section.slice(1, 3), name: section.slice(4) === '*' ? null : section.slice(4) }
     : null
+/**
+ * The third token shape (2026-09-09): `@de:Drehorte`, a filming locations
+ * section of ANOTHER edition's article. The English names of the nine
+ * editions the harvester reads; a hand copy of EDITION_NAMES in
+ * src/data/locationsCore.ts.
+ */
+const EDITION_NAMES = {
+  ja: 'Japanese', it: 'Italian', de: 'German', es: 'Spanish', fr: 'French', cs: 'Czech', pl: 'Polish', sv: 'Swedish', ko: 'Korean',
+  // Seventeen more since 2026-09-13; keep in step with EDITION_NAMES in src/data/locationsCore.ts.
+  ru: 'Russian', pt: 'Portuguese', fa: 'Persian', nl: 'Dutch', uk: 'Ukrainian', zh: 'Chinese', ar: 'Arabic', ca: 'Catalan',
+  fi: 'Finnish', id: 'Indonesian', tr: 'Turkish', he: 'Hebrew', hu: 'Hungarian', no: 'Norwegian', da: 'Danish', ro: 'Romanian', el: 'Greek',
+}
+const wikiOther = (section) => {
+  const m = /^@([a-z]{2}):/.exec(section ?? '')
+  return m ? { wiki: m[1], section: section.slice(m[0].length) } : null
+}
+const fragmentOf = (section) => section.replace(/%/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F')
 const wikiEvidencePhrase = (t) => {
   const cat = wikiCat(t.wikiSection)
   if (cat) {
     const where = cat.wiki === 'ja' ? 'Japanese Wikipedia' : 'Wikipedia'
     return cat.name ? `${where}'s "${cat.name}" category` : `${where}'s setting categories`
   }
+  const other = wikiOther(t.wikiSection)
+  // `lead` (2026-09-13): the prose above the first heading, so the article itself.
+  if (other) return other.section === 'lead' ? `${EDITION_NAMES[other.wiki] ?? other.wiki} Wikipedia's article` : `${EDITION_NAMES[other.wiki] ?? other.wiki} Wikipedia's "${other.section.replace(/_/g, ' ')}" section`
   return t.wikiSection ? `its article's "${t.wikiSection.replace(/_/g, ' ')}" section` : 'its article'
 }
 const wikiEvidenceHref = (t) => {
@@ -170,10 +218,19 @@ const wikiEvidenceHref = (t) => {
     const base = cat.wiki === 'en' ? 'https://en.wikipedia.org' : 'https://ja.wikipedia.org'
     return `${base}/wiki/${encodeURIComponent(`Category:${cat.name}`.replace(/ /g, '_'))}`
   }
+  const other = wikiOther(t.wikiSection)
+  if (other) {
+    // The section on that edition's own article, or nothing: the English
+    // article does not carry the claim.
+    const article = t.wikiArticles?.[other.wiki]
+    if (!article) return null
+    const page = `https://${other.wiki}.wikipedia.org/wiki/${encodeURIComponent(article.replace(/ /g, '_'))}`
+    return other.section === 'lead' ? page : `${page}#${fragmentOf(other.section)}`
+  }
   if (!t.wiki || !t.wikiSection) return t.wiki
   // `#`, `%` and `?` cannot travel raw inside a fragment — the hand copy of
   // fragmentOf() in src/data/locationsCore.ts; keep the two in step.
-  return `${t.wiki}#${t.wikiSection.replace(/%/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F')}`
+  return `${t.wiki}#${fragmentOf(t.wikiSection)}`
 }
 
 /** A game, an anime or a manga is SET here; everything else was FILMED here. The
@@ -228,7 +285,37 @@ let countryCount = 0
 let loadedMtime = 0
 let lastStat = 0
 
+/**
+ * Which pages exist. The site builds a production page only above a bar
+ * (`filmHasPage` in src/data/guide.ts: enough places or Wikipedia editions, plus
+ * the pages it keeps), while this file carries every production; until 1.2.1 every
+ * production was given a `page` link, and about 2 % of them answered 404 (16 of
+ * 842 distinct links in mcp/deep-check.mjs, e.g. /film/the-amazing-mr-blunden/).
+ * So a link is given only when the page is in the deployed tree, which is read
+ * only and mounted for this service (ReadOnlyPaths in the unit). The tree and
+ * atlas-compact.json ship together, so the cache is dropped on every reload.
+ * Where no tree is found (a container built from the GitHub copy) links are
+ * given as before.
+ */
+const SITE_ROOT = [
+  process.env.SITE_ROOT,
+  '/var/www/screenatlas',
+  fileURLToPath(new URL('../dist/', import.meta.url)),
+].filter(Boolean).find((p) => exists(join(p, 'index.html')))
+const pageSeen = new Map()
+/** The page's URL if the deployed tree holds it, else null. `path` is like "film/skyfall". */
+function livePage(path) {
+  if (!SITE_ROOT) return `${SITE_URL}/${path}/`
+  let ok = pageSeen.get(path)
+  if (ok === undefined) {
+    ok = exists(join(SITE_ROOT, path, 'index.html'))
+    pageSeen.set(path, ok)
+  }
+  return ok ? `${SITE_URL}/${path}/` : null
+}
+
 function loadData() {
+  pageSeen.clear()
   const raw = JSON.parse(readFileSync(DATA, 'utf8'))
   const idx = (cols) => Object.fromEntries(cols.map((n, i) => [n, i]))
 
@@ -321,6 +408,9 @@ function loadData() {
         tc.ws === undefined || r[tc.ws] === null || r[tc.ws] === '*'
           ? null
           : r[tc.ws] || 'Filming',
+      // The article title per other edition (`wa`, 2026-09-09), so a
+      // `@de:Drehorte` claim can link the section it cites.
+      wikiArticles: tc.wa !== undefined ? (r[tc.wa] ?? null) : null,
       series: tc.sx === undefined ? [] : (r[tc.sx] ?? []).map((i) => seriesTable[i]).filter(Boolean),
     }
   })
@@ -379,10 +469,29 @@ function norm(s) {
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
 }
+/** The country names the loaded data holds, rebuilt when a reload swaps `locations`. */
+let countryNameSet = null
+let countryNameSrc = null
+function countryNames() {
+  if (countryNameSrc !== locations) {
+    countryNameSet = new Set(locations.map((l) => norm(l.country)))
+    countryNameSrc = locations
+  }
+  return countryNameSet
+}
+/** Common two letter names that are not the ISO code. */
+const ISO_ALIAS = { uk: 'gb' }
 function matchesCountry(loc, want) {
   if (!want) return true
-  const w = norm(want)
-  return norm(loc.country) === w || norm(loc.iso) === w || norm(loc.country).includes(w)
+  const w = norm(want).trim()
+  // A two letter argument is an ISO 3166 code and never a fragment of a name.
+  // Until 2026-11-05 it was matched inside names too: "IT" took in the United
+  // Kingdom and Haiti, "US" Australia, Russia and Cyprus, "FI" Fiji, "UK" Ukraine.
+  if (/^[a-z]{2}$/.test(w)) return norm(loc.iso) === (ISO_ALIAS[w] ?? w)
+  // A whole name matches itself only ("Niger" is not "Nigeria", "Guinea" is not
+  // "Papua New Guinea"); anything else matches as a fragment of a name.
+  if (countryNames().has(w)) return norm(loc.country) === w
+  return norm(loc.country).includes(w)
 }
 function categoryOf(arg) {
   if (!arg) return null
@@ -471,8 +580,13 @@ function titleBrief(t) {
     year: yearLabel(t),
     located_places: t.locations.length,
     ...(t.series.length ? { series: t.series.map((s) => s.name) } : {}),
-    page: `${SITE_URL}/${pageSegment(t)}/${t.slug}/`,
+    ...pageField(t),
   }
+}
+/** `{ page }` when the production has a page on the site, else nothing. */
+function pageField(t) {
+  const url = livePage(`${pageSegment(t)}/${t.slug}`)
+  return url ? { page: url } : {}
 }
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371
@@ -581,7 +695,7 @@ const TOOLS = [
           : undefined,
         wikipedia: t.wiki,
         wikidata: `https://www.wikidata.org/wiki/${t.qid}`,
-        page: `${SITE_URL}/${pageSegment(t)}/${t.slug}/`,
+        ...pageField(t),
         map: `${SITE_URL}/#title=${t.slug}`,
       }
     },
@@ -722,9 +836,15 @@ const TOOLS = [
       required: ['latitude', 'longitude'],
     },
     run(args) {
-      const lat = Number(args.latitude)
-      const lon = Number(args.longitude)
+      // A number, or a string holding one; null, '' and true are not 0 or 1 here.
+      const num = (v) => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN)
+      const lat = num(args.latitude)
+      const lon = num(args.longitude)
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return { error: 'latitude/longitude must be numbers' }
+      // Out of range is an error the model can correct, not an empty answer
+      // (until 1.2.1 latitude 95 returned "nothing near").
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180)
+        return { error: 'latitude must be between -90 and 90 and longitude between -180 and 180 (WGS84 degrees)' }
       const cat = categoryOf(args.category)
       if (cat === undefined) return { error: `Unknown category "${args.category}". Valid: ${CATEGORY_KEYS.join(', ')}` }
       const radius = Math.max(1, Math.min(500, Number(args.radius_km) || 50))
@@ -878,12 +998,22 @@ function handleRpc(msg) {
     return {
       protocolVersion: PROTOCOLS.has(asked) ? asked : LATEST,
       capabilities: { tools: {} },
-      serverInfo: { name: 'filmmap', title: 'FilmMap — where films and TV were actually shot', version: VERSION },
+      // `description`, `websiteUrl` and `icons` arrived with 2025-11-25; a client on
+      // an older revision ignores fields it does not know.
+      serverInfo: {
+        name: 'moviescenemap',
+        title: 'Movie Scene Map',
+        version: VERSION,
+        description:
+          'Where films and television series were filmed, and where video games, anime and manga are set: real places from Wikidata, read only.',
+        websiteUrl: SITE_URL,
+        icons: SERVER_ICONS,
+      },
       instructions:
         // Counted, not asserted. Saying "2,623 real filming locations" would be
         // wrong by exactly the 121 region pins, which are the one thing on this
         // map that is not a filming location.
-        `Read-only tools over FilmMap: ${(locations.length - regionCount()).toLocaleString('en-US')} real filming locations, plus ` +
+        `Read-only tools over Movie Scene Map: ${(locations.length - regionCount()).toLocaleString('en-US')} real filming locations, plus ` +
         `${regionCount()} whole countries or regions that carry nothing but video-game settings, for ` +
         `${titles.length.toLocaleString('en-US')} films, series and games across ${countryCount} countries. The backbone is ` +
         `"filming location" (P915) statements on Wikidata joined to each place's coordinates and Wikipedia article; some ` +
@@ -911,6 +1041,7 @@ function handleRpc(msg) {
           .replace('{{FILMS}}', titles.length.toLocaleString('en-US'))
           .replace('{{LOCATIONS}}', locations.length.toLocaleString('en-US')),
         inputSchema,
+        annotations: { title, ...TOOL_HINTS },
       })),
     }
   }
@@ -925,10 +1056,19 @@ function handleRpc(msg) {
       return { content: [{ type: 'text', text: `Tool failed: ${e.message}` }], isError: true }
     }
     const isError = Boolean(out && typeof out === 'object' && 'error' in out)
-    return { content: [{ type: 'text', text: JSON.stringify(out, null, 1) }], isError }
+    const text = { content: [{ type: 'text', text: JSON.stringify(out, null, 1) }], isError }
+    // The same object, structured, beside its JSON text (the text stays for
+    // clients that only read content). Only for a success: an error is a
+    // sentence for the model to read and correct itself from.
+    return !isError && out && typeof out === 'object' && !Array.isArray(out) ? { ...text, structuredContent: out } : text
   }
   return { __rpcError: { code: -32601, message: `Method not found: ${method}` } }
 }
+
+/** What every tool here is: it reads one local file and changes nothing.
+ *  readOnlyHint is the one Claude's Connectors Directory checks; the rest say
+ *  the same thing to clients that read them (spec 2025-06-18 onward). */
+const TOOL_HINTS = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
 
 /* ── HTTP transport (stateless streamable-http) ───────────────────────────── */
 const CORS = {
@@ -985,6 +1125,17 @@ const server = createServer((req, res) => {
       return send(res, 400, { jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id: null })
 
     const hasId = msg.id !== undefined && msg.id !== null
+    // After initialize a client names the negotiated revision in this header on
+    // every request, and a server MUST answer 400 to one it does not speak
+    // (2025-06-18 onward). No header means a client older than the header, which
+    // the spec says to read as 2025-03-26: served as before.
+    const header = req.headers['mcp-protocol-version']
+    if (header !== undefined && msg.method !== 'initialize' && !PROTOCOLS.has(String(header)))
+      return send(res, 400, {
+        jsonrpc: '2.0',
+        error: { code: -32600, message: `Unsupported MCP-Protocol-Version: ${header}. Supported: ${[...PROTOCOLS].join(', ')}` },
+        id: hasId ? msg.id : null,
+      })
     const isNotification = typeof msg.method === 'string' && !hasId
     const isResponse = msg.method === undefined && (msg.result !== undefined || msg.error !== undefined)
     if (isNotification || isResponse) return send(res, 202, undefined)

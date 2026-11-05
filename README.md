@@ -19,6 +19,17 @@ The older address, `https://thefilmmap.com/mcp`, keeps answering for clients
 configured before the rename. Streamable HTTP, stateless, POST-only (a `GET`
 returning 405 is correct).
 
+It is listed in the [official MCP registry](https://registry.modelcontextprotocol.io/v0/servers?search=com.moviescenemap)
+as `com.moviescenemap/filming-locations` (the older entry, `com.thefilmmap/filming-locations`,
+points at the older address and the same server).
+
+**Protocol.** Revisions 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25; the
+client's revision is echoed when it is one of these, and an `MCP-Protocol-Version`
+header naming another one gets a 400. Every tool is annotated as read only
+(`readOnlyHint` true, `destructiveHint` false, `idempotentHint` true,
+`openWorldHint` false), and a successful call returns `structuredContent` beside
+the same object as JSON text.
+
 ## Client configuration
 
 ```json
@@ -55,6 +66,13 @@ This is the part worth reading before wiring it into anything that writes prose.
 
 **Two kinds of evidence, never merged.** Most links are Wikidata statements. Some are places named in a production's English Wikipedia *Filming* section, or a setting category its editors filed it under; those arrive in their own fields, labelled with the exact article and section they were read from. Say "per Wikipedia" when you repeat one.
 
+**A country is a name or a two letter ISO code.** `IT` means Italy and nothing
+else, `UK` is read as `GB`, and a whole country name matches only itself.
+
+**A page link means the page exists.** The site gives a production its own page
+only above a bar, so a production below it comes without a `page` field; its
+places are still listed and still on the map.
+
 **Coverage is uneven and the server says so.** Some productions are recorded only at country level and appear with countries and no coordinates. Those that cannot be placed at all are published as a work list at [moviescenemap.com/gaps/](https://moviescenemap.com/gaps/) so they can be fixed on Wikidata.
 
 ## Data
@@ -82,7 +100,11 @@ docker run -p 8896:8896 filmmap-mcp     # → http://localhost:8896/mcp
 ```
 
 `HOST` defaults to `127.0.0.1`; the container sets `0.0.0.0` because the default
-is unreachable from outside a container.
+is unreachable from outside a container. `SITE_ROOT` may point at a copy of the
+site's built pages, so that a production gets a `page` link only when its page
+exists; without it every production gets one. For clients that start the server
+themselves, `node server.mjs --stdio` speaks newline delimited JSON-RPC on stdin
+and stdout.
 
 ## Licence
 

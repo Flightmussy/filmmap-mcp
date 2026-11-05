@@ -1,6 +1,6 @@
 [Unit]
 Description=FilmMap MCP server (read-only Model Context Protocol endpoint over atlas-compact.json)
-Documentation=https://thefilmmap.com/data/
+Documentation=https://moviescenemap.com/data/
 After=network.target
 
 [Service]

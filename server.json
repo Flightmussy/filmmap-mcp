@@ -1,9 +1,14 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "com.thefilmmap/filming-locations",
+  "name": "com.moviescenemap/filming-locations",
+  "title": "Movie Scene Map",
   "description": "Where films and TV were shot, and where games, anime and manga are set. Wikidata, read only, CC0.",
-  "version": "1.1.0",
-  "websiteUrl": "https://thefilmmap.com/data/",
+  "version": "1.2.2",
+  "websiteUrl": "https://moviescenemap.com/data/",
+  "icons": [
+    { "src": "https://moviescenemap.com/favicon.svg", "mimeType": "image/svg+xml", "sizes": ["any"] },
+    { "src": "https://moviescenemap.com/apple-touch-icon.png", "mimeType": "image/png", "sizes": ["180x180"] }
+  ],
   "repository": {
     "url": "https://github.com/Flightmussy/filmmap-mcp",
     "source": "github"
@@ -11,7 +16,7 @@
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://thefilmmap.com/mcp"
+      "url": "https://moviescenemap.com/mcp"
     }
   ]
 }
